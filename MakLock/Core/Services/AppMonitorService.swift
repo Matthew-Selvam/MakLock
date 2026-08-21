@@ -89,7 +89,8 @@ final class AppMonitorService: ObservableObject {
         }
     }
 
-    /// Scan currently running apps and trigger lock for any protected ones.
+    /// Scan currently running apps and trigger lock only for the one the user is actively in.
+    /// Background apps in other Spaces are left alone — they'll be locked when the user switches to them.
     private func checkRunningApps() {
         let protectedList = Defaults.shared.protectedApps
         let settings = Defaults.shared.appSettings
@@ -98,24 +99,24 @@ final class AppMonitorService: ObservableObject {
               protectedList.count, settings.isProtectionEnabled ? "ON" : "OFF")
 
         guard settings.isProtectionEnabled else { return }
+        guard settings.requireAuthOnLaunch else { return }
 
+        // Only lock the frontmost app — never interrupt the user on a background Space
         let workspace = NSWorkspace.shared
-        for runningApp in workspace.runningApplications {
-            guard let bundleID = runningApp.bundleIdentifier else { continue }
+        guard let frontmost = workspace.frontmostApplication,
+              let bundleID = frontmost.bundleIdentifier else { return }
 
-            if let protectedApp = protectedList.first(where: {
-                $0.bundleIdentifier == bundleID && $0.isEnabled
-            }) {
-                guard !authenticatedApps.contains(bundleID) else { continue }
-                guard !pendingLockBundleIDs.contains(bundleID) else { continue }
-                guard !OverlayWindowService.shared.isShowing else { continue }
+        guard let protectedApp = protectedList.first(where: {
+            $0.bundleIdentifier == bundleID && $0.isEnabled
+        }) else { return }
 
-                NSLog("[MakLock] Found running protected app: %@ (%@)", protectedApp.name, bundleID)
-                detectedApp = protectedApp
-                onProtectedAppDetected?(protectedApp)
-                return // Only lock one at a time
-            }
-        }
+        guard !authenticatedApps.contains(bundleID) else { return }
+        guard !pendingLockBundleIDs.contains(bundleID) else { return }
+        guard !OverlayWindowService.shared.isShowing else { return }
+
+        NSLog("[MakLock] Frontmost app is protected: %@ (%@)", protectedApp.name, bundleID)
+        detectedApp = protectedApp
+        onProtectedAppDetected?(protectedApp)
     }
 
     /// Stop monitoring.
