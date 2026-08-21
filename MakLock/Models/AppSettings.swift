@@ -32,4 +32,16 @@ struct AppSettings: Codable {
 
     /// Launch MakLock at login.
     var launchAtLogin: Bool = false
+
+    // MARK: - Auth Method Preferences
+
+    /// Whether Touch ID (fingerprint) is enabled as an auth method.
+    var touchIDEnabled: Bool = true
+
+    /// Whether typed password is enabled as an auth method.
+    var passwordAuthEnabled: Bool = true
+
+    /// The primary authentication method when both are enabled.
+    /// If only one is enabled, that method is always used regardless of this value.
+    var primaryAuthMethod: AuthMethod = .touchID
 }

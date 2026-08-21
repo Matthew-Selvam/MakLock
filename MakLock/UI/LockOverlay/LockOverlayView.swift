@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The lock overlay UI: blur background with centered unlock card.
-/// Touch ID triggers automatically on appear — no user interaction needed for the happy path.
+/// Respects the user's auth method preferences (Touch ID, Password, or both with a primary order).
 struct LockOverlayView: View {
     let appName: String
     let bundleIdentifier: String
@@ -18,39 +18,53 @@ struct LockOverlayView: View {
         case waitingForUser
     }
 
+    private var settings: AppSettings { Defaults.shared.appSettings }
+
+    /// The method we try first on appear.
+    private var primaryMethod: AuthMethod {
+        let s = settings
+        if s.touchIDEnabled && s.passwordAuthEnabled {
+            return s.primaryAuthMethod
+        }
+        return s.touchIDEnabled ? .touchID : .password
+    }
+
+    /// Whether a fallback method is available (the other method when both are on).
+    private var hasFallback: Bool {
+        settings.touchIDEnabled && settings.passwordAuthEnabled
+    }
+
+    private var fallbackLabel: String {
+        primaryMethod == .touchID ? "Use Password Instead" : "Use Touch ID Instead"
+    }
+
     var body: some View {
         ZStack {
-            // Blur background
             BlurView(material: .hudWindow, blendingMode: .behindWindow)
                 .ignoresSafeArea()
 
-            // Dark tint
             Color.black.opacity(0.4)
                 .ignoresSafeArea()
 
             if showPasswordInput {
                 PasswordInputView(
-                    onSuccess: {
-                        onDismiss()
-                    },
+                    onSuccess: { onDismiss() },
                     onCancel: {
-                        showPasswordInput = false
+                        withAnimation(MakLockAnimations.standard) {
+                            showPasswordInput = false
+                        }
                     }
                 )
                 .transition(.opacity)
             } else {
-                // Unlock card
                 VStack(spacing: 20) {
-                    // App icon
                     AppIconView(bundleIdentifier: bundleIdentifier, size: 64)
 
-                    // Title
                     Text("\(appName) is Locked")
                         .font(MakLockTypography.largeTitle)
                         .foregroundColor(MakLockColors.textPrimary)
 
                     if authState == .authenticating {
-                        // Touch ID in progress
                         ProgressView()
                             .controlSize(.regular)
                             .padding(.top, 4)
@@ -59,34 +73,48 @@ struct LockOverlayView: View {
                             .font(MakLockTypography.body)
                             .foregroundColor(MakLockColors.textSecondary)
                     } else {
-                        // Touch ID failed or cancelled — show options
                         if let errorMessage {
                             Text(errorMessage)
                                 .font(MakLockTypography.caption)
                                 .foregroundColor(MakLockColors.error)
                         }
 
-                        PrimaryButton("Try Again", icon: "touchid") {
-                            attemptTouchID()
+                        // Retry primary
+                        if primaryMethod == .touchID {
+                            PrimaryButton("Try Again", icon: "touchid") {
+                                attemptPrimaryMethod()
+                            }
+                            .padding(.top, 4)
+                        } else {
+                            PrimaryButton("Enter Password", icon: "key.fill") {
+                                OverlayWindowService.shared.enableKeyboardInput()
+                                withAnimation(MakLockAnimations.standard) {
+                                    showPasswordInput = true
+                                }
+                            }
+                            .padding(.top, 4)
                         }
-                        .padding(.top, 4)
 
-                        SecondaryButton("Use Password Instead") {
-                            OverlayWindowService.shared.enableKeyboardInput()
-                            withAnimation(MakLockAnimations.standard) {
-                                showPasswordInput = true
+                        // Fallback (only shown when both methods are enabled)
+                        if hasFallback {
+                            SecondaryButton(fallbackLabel) {
+                                if primaryMethod == .touchID {
+                                    OverlayWindowService.shared.enableKeyboardInput()
+                                    withAnimation(MakLockAnimations.standard) {
+                                        showPasswordInput = true
+                                    }
+                                } else {
+                                    attemptTouchID()
+                                }
                             }
                         }
                     }
 
-                    // Dev mode skip button
                     #if DEBUG
-                    Button("Skip (Dev)") {
-                        onDismiss()
-                    }
-                    .font(MakLockTypography.caption)
-                    .foregroundColor(MakLockColors.error)
-                    .padding(.top, 8)
+                    Button("Skip (Dev)") { onDismiss() }
+                        .font(MakLockTypography.caption)
+                        .foregroundColor(MakLockColors.error)
+                        .padding(.top, 8)
                     #endif
                 }
                 .padding(40)
@@ -104,11 +132,24 @@ struct LockOverlayView: View {
             withAnimation(MakLockAnimations.overlayAppear) {
                 isVisible = true
             }
-            // Only the primary screen triggers Touch ID (prevents duplicate system prompts)
             if isPrimary {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    attemptTouchID()
+                    attemptPrimaryMethod()
                 }
+            }
+        }
+    }
+
+    // MARK: - Auth Dispatch
+
+    private func attemptPrimaryMethod() {
+        if primaryMethod == .touchID {
+            attemptTouchID()
+        } else {
+            authState = .waitingForUser
+            OverlayWindowService.shared.enableKeyboardInput()
+            withAnimation(MakLockAnimations.standard) {
+                showPasswordInput = true
             }
         }
     }
@@ -116,14 +157,13 @@ struct LockOverlayView: View {
     private func attemptTouchID() {
         authState = .authenticating
         errorMessage = nil
+        showPasswordInput = false
 
-        // Lower overlay level and pass through mouse so system Touch ID dialog gets full focus
         OverlayWindowService.shared.setTouchIDMode(true)
 
         AuthenticationService.shared.authenticateWithTouchID(
             reason: "Unlock \(appName)"
         ) { result in
-            // Restore overlay level and mouse capture
             OverlayWindowService.shared.setTouchIDMode(false)
 
             switch result {
