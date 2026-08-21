@@ -12,11 +12,15 @@ struct LockOverlayView: View {
     @State private var showPasswordInput = false
     @State private var authState: AuthState = .authenticating
     @State private var errorMessage: String?
+    @State private var authTimeoutTask: DispatchWorkItem?
 
     private enum AuthState {
         case authenticating
         case waitingForUser
     }
+
+    /// If Touch ID hasn't responded within this many seconds, bail out and show the buttons.
+    private let touchIDTimeout: TimeInterval = 8
 
     private var settings: AppSettings { Defaults.shared.appSettings }
 
@@ -138,6 +142,10 @@ struct LockOverlayView: View {
                 }
             }
         }
+        .onDisappear {
+            authTimeoutTask?.cancel()
+            authTimeoutTask = nil
+        }
     }
 
     // MARK: - Auth Dispatch
@@ -159,11 +167,29 @@ struct LockOverlayView: View {
         errorMessage = nil
         showPasswordInput = false
 
+        // Cancel any previous timeout
+        authTimeoutTask?.cancel()
+
+        // Start a timeout — if Touch ID hasn't responded in time, show the buttons
+        let timeout = DispatchWorkItem {
+            guard authState == .authenticating else { return }
+            AuthenticationService.shared.cancelAuthentication()
+            OverlayWindowService.shared.setTouchIDMode(false)
+            authState = .waitingForUser
+            errorMessage = "Touch ID took too long. Try again or use a different method."
+        }
+        authTimeoutTask = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + touchIDTimeout, execute: timeout)
+
         OverlayWindowService.shared.setTouchIDMode(true)
 
         AuthenticationService.shared.authenticateWithTouchID(
             reason: "Unlock \(appName)"
         ) { result in
+            // Cancel the timeout — we got a real response
+            authTimeoutTask?.cancel()
+            authTimeoutTask = nil
+
             OverlayWindowService.shared.setTouchIDMode(false)
 
             switch result {
