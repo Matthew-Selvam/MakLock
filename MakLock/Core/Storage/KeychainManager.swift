@@ -15,19 +15,32 @@ final class KeychainManager {
     func savePassword(_ password: String) -> Bool {
         guard let data = password.data(using: .utf8) else { return false }
 
-        // Delete existing entry first
-        deletePassword()
-
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            kSecAttrAccount as String: account
         ]
 
-        let status = SecItemAdd(query as CFDictionary, nil)
-        return status == errSecSuccess
+        // Try updating an existing item first; add if none exists
+        let updateFields: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+
+        let updateStatus = SecItemUpdate(query as CFDictionary, updateFields as CFDictionary)
+        if updateStatus == errSecSuccess {
+            return true
+        }
+
+        // Item didn't exist (or we couldn't update it) — delete any stale entry and add fresh
+        SecItemDelete(query as CFDictionary)
+
+        var addQuery = query
+        addQuery[kSecValueData as String] = data
+        addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        return addStatus == errSecSuccess
     }
 
     /// Verify a password against the stored Keychain entry.
