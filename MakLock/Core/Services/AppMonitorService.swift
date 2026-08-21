@@ -31,15 +31,15 @@ final class AppMonitorService: ObservableObject {
         workspace.notificationCenter.publisher(for: NSWorkspace.didLaunchApplicationNotification)
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .sink { [weak self] app in
-                self?.handleAppEvent(app)
+                self?.handleAppEvent(app, trigger: .launch)
             }
             .store(in: &cancellables)
 
-        // Monitor app activations (switching to a running protected app)
+        // Monitor app activations (user switches to a running protected app)
         workspace.notificationCenter.publisher(for: NSWorkspace.didActivateApplicationNotification)
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .sink { [weak self] app in
-                self?.handleAppEvent(app)
+                self?.handleAppEvent(app, trigger: .activate)
             }
             .store(in: &cancellables)
 
@@ -167,7 +167,9 @@ final class AppMonitorService: ObservableObject {
         }
     }
 
-    private func handleAppEvent(_ runningApp: NSRunningApplication) {
+    private enum AppEventTrigger { case launch, activate }
+
+    private func handleAppEvent(_ runningApp: NSRunningApplication, trigger: AppEventTrigger) {
         guard let bundleID = runningApp.bundleIdentifier else { return }
 
         // Skip blacklisted system apps
@@ -183,6 +185,17 @@ final class AppMonitorService: ObservableObject {
         let settings = Defaults.shared.appSettings
         guard settings.isProtectionEnabled else { return }
 
+        // Respect per-trigger settings
+        switch trigger {
+        case .launch:
+            guard settings.requireAuthOnLaunch else { return }
+        case .activate:
+            guard settings.requireAuthOnActivate else { return }
+            // For activations, only fire if the app is actually frontmost —
+            // background-space or dock-bounce activations should not trigger the lock
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == bundleID else { return }
+        }
+
         // Skip if app is already authenticated in this session
         guard !authenticatedApps.contains(bundleID) else { return }
 
@@ -192,7 +205,8 @@ final class AppMonitorService: ObservableObject {
         // Don't trigger if a prompt is already pending for this app
         guard !pendingLockBundleIDs.contains(bundleID) else { return }
 
-        NSLog("[MakLock] Protected app detected: %@ (%@)", protectedApp.name, bundleID)
+        NSLog("[MakLock] Protected app detected (%@): %@ (%@)",
+              trigger == .launch ? "launch" : "activate", protectedApp.name, bundleID)
         pendingLockBundleIDs.insert(bundleID)
         detectedApp = protectedApp
         onProtectedAppDetected?(protectedApp)
